@@ -18,7 +18,7 @@ u_max = +deg2rad(80);
 u_min = -deg2rad(80);
 
 %% Trust region defined
-eps = 1;
+eps = 1e5;
 
 %% Split Node
 N   =   100; %Node
@@ -32,25 +32,25 @@ ny      = N+1;
 ngam    = N+1;
 nu      = N+1;
 neta    = N+1;
-% nvar    = nx + ny + ngam + nu + neta + 1;
-nvar    = nx + ny + ngam + nu + 1;
+nvar    = nx + ny + ngam + nu + neta + 1;
+% nvar    = nx + ny + ngam + nu + 1;
 
 Nx      = 0;
 Ny      = Nx + nx;
 Ngam    = Ny + ny;
 Nu      = Ngam + ngam;
-% Neta    = Nu + nu;
-% Ntf     = Neta + neta + 1;
-Ntf     = Nu + nu + 1;
+Neta    = Nu + nu;
+Ntf     = Neta + neta + 1;
+% Ntf     = Nu + nu + 1;
 
-max_scp_iter = 20;
+max_scp_iter = 40;
 tol = 1e-4;
 %% Random of Dynamic Components (Linear Guess)
-x       = linspace(x_i,x_f,nx)';
-y       = linspace(y_i,y_f,ny)';
-gam     = linspace(gam_i,gam_f,ngam)';
-u       = zeros(nu,1);
-eta     = zeros(neta,1);
+x       = linspace(x_i,x_f,nx);
+y       = linspace(y_i,y_f,ny);
+gam     = linspace(gam_i,gam_f,ngam);
+u       = zeros(nu,1)';
+eta     = zeros(neta,1)';
 
 %% history
 x_hist      = zeros(nx,max_scp_iter);
@@ -86,9 +86,9 @@ ub = +Inf.*ones(nvar, 1);
 
 % lb(Nu+1:Nu+nu)       = u_min;       ub(Nu+1:Nu+nu)       = u_max;
 
-%% Cost function: J = f^T * var
-% f = zeros(nvar,1); 
-% f(Neta+1:Neta+neta,1) = 1;
+%% Cost function:
+f = zeros(nvar,1); 
+f(Neta+1:Neta+neta,1) = 1*dt;
 H = zeros(nvar,nvar);
 for i = 1:nu
    H(Nu+i,Nu+i) = 2*dt;
@@ -96,7 +96,6 @@ end
 
 %% Perform the calculation in each loop (Sequential Programming)
 for iter = 2:max_scp_iter %First interation is initial guess for all dynamic components
-%     Var =   [r the phi V gam psi sig u eps_r eps_the eps_phi eps_V eps_gam eps_psi eps_sig];
     dt      = tf / N;
     dt2     = dt / 2;
     
@@ -179,19 +178,21 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
     Aeq = [Aeq; row_bc1];
     beq = [beq; gam_f];
     
+%     %% Using solver to solve Optimal problem
+%     Var = [x y gam u tf];
+%     x0  = Var';
 %     % Objective function
-%     obj = @(x) 0.5 * x' * H * x + f' * x ;
-% %     obj = @(x) f(1:Neps_r)'*x(1:Neps_r) + f(Neps_r+1:nvar)'*abs(x(Neps_r+1:nvar));
+%     obj = @(x) 0.5 * x' * H * x;
 % 
 %     % Nonlinear constraint (SOC)
-%     nonlcon = @(z) soc_constraint(z, Var', r_trust, the_trust, phi_trust, V_trust, gam_trust, psi_trust, sig_trust, Nr, Nthe, Nphi, NV, Ngam, Npsi, Nsig, N+1);
+%     nonlcon = @(z) soc_constraint(z, Var', eps, Nx, Ny, Ngam, N+1);
 % 
 %     % Options
 %     options = optimoptions('fmincon', ...
 %         'Display','iter', ...
 %         'Algorithm','interior-point', ...
 %         'MaxIterations',100,...
-%         'MaxFunctionEvaluations', 1e5);
+%         'MaxFunctionEvaluations', 1e4);
 % 
 %     % Solve
 %     [Solution, fval, exitflag, output] = fmincon( ...
@@ -202,20 +203,36 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
 %         nonlcon, ...          % nonlinear (SOC)
 %         options);
     %% Using solver to solve Optimal problem
-     [var, fval, exitflag] = quadprog(H, [], [], [], Aeq, beq, lb, ub);
-     if exitflag <= 0
-        warning('Failed Solver');
-        break;
-     end
+%      [var, fval, exitflag] = quadprog(H, [], [], [], Aeq, beq, lb, ub);
+%      if exitflag <= 0
+%         warning('Failed Solver');
+%         break;
+%      end
+    Var = [x y gam u tf];
+    cvx_begin
+        cvx_solver sedumi
+
+        variable Solution(nvar)
+
+%         minimize(0.5*quad_form(Solution, H) )
+        minimize(f'*Solution)
+
+        subject to
+            Aeq*Solution == beq
+            Solution(Neta+1:Neta+neta) >= Solution(Nu+1:Nu+nu).^2 
+%             norm(Solution(Nx+1:Nx+nx)-x(1:nx)',2) <= 50e3*N             % TRUST REGION
+%             norm(Solution(Ny+1:Ny+ny)-y(1:ny)',2) <= 50e3*N             % TRUST REGION
+%             norm(Solution(Ngam+1:Ngam+ngam)-gam(1:ngam)',2) <= 2*pi*N   % TRUST REGION
+    cvx_end
+    fval = cvx_optval;
+    var = Solution;
      %% Extract solution 
-%     var = Solution;
     x   = var(Nx   +1 : Nx   +nx)';
     y   = var(Ny   +1 : Ny   +ny)';
     gam = var(Ngam +1 : Ngam +ngam)';
     u   = var(Nu   +1 : Nu   +nu)';
 %     eta = var(Neta +1 : Nta  +neta)';
     tf  = var(end);
-
     
     %% store history
     x_hist(:,iter)    = x;
@@ -235,7 +252,7 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
     fprintf('SCP iter %d residual = %g\n', iter, Residual);
     if Residual < tol
         fprintf('Dynamics satisfied at iteration %d\n',iter);
-%         break;
+        break;
     end
     Res_hist = [Res_hist; Residual];
 end
@@ -288,7 +305,7 @@ ylabel('(deg)')
 title('Fligth path angle')
 
 subplot(3,2,5)
-plot(1:max_scp_iter,J_hist,'o-','LineWidth',2)
+plot(1:iter,J_hist,'o-','LineWidth',2)
 xlabel('SCP iteration')
 ylabel('Objective value')
 title('Objective function convergence')
