@@ -12,39 +12,90 @@ gam_i = deg2rad(45); %rad
 gam_f = deg2rad(90); %rad
 
 V = 300;
+g0 = 9.8;
+%% No Fly zone 1:
+xc1  = 30e3;
+yc1  = 15e3;
+r1   = 0e3;
+
+%% No Fly zone 2:
+xc2  = 20e3;
+yc2  = 35e3;
+r2   = 10e3;
+
+%% No Fly zone 3:
+xc3  = 35e3;
+yc3  = 30e3;
+r3   = 5e3;
 
 %% Boundaries of dynamic components
 u_max = +deg2rad(80);
 u_min = -deg2rad(80);
 
 %% Trust region defined
-eps = 1e5;
+eps = 1*1e3;
 
 %% Split Node
-N   =   100; %Node
+N   =  100;                  %Node
 tf  =   sqrt(x_f^2+y_f^2)/V; %Seconds
-t0  =   0; %Seconds
+t0  =   0;                   %Seconds
 dt  =   tf / N;
 dt2 =   dt/2;
 
+%% number node of slack variable 
+% ns1x = N;
+% ns2x = N;
+% ns1y = N;
+% ns2y = N;
+% ns1g = N;
+% ns2g = N;
+ns1NFZ = N+1;
+ns2NFZ = N+1;
+% ns     = ns1x + ns2x + ns1y + ns2y + ns1g + ns2g + ns1NFZ + ns2NFZ;
+ns     = ns1NFZ + ns2NFZ;
+% ns     = ns1NFZ;
+% ns     = ns1x + ns2x + ns1y + ns2y + ns1g + ns2g;
+xi     = 1e3;       % Penaltial weight
+
+%% number node of dynamic variable
 nx      = N+1;  
 ny      = N+1;
 ngam    = N+1;
 nu      = N+1;
 neta    = N+1;
-nvar    = nx + ny + ngam + nu + neta + 1;
-% nvar    = nx + ny + ngam + nu + 1;
+ntf     = 1;
+% nvar    = nx + ny + ngam + nu + neta + ntf + ns;    %Within eta and slack
+% nvar    = nx + ny + ngam + nu + neta + ntf;       %Within eta and without slack
+% nvar    = nx + ny + ngam + nu + 1;                %Without eta
+nvar    = nx + ny + ngam + nu + ntf + ns;
 
+%% Position Dynamic components 
 Nx      = 0;
 Ny      = Nx + nx;
 Ngam    = Ny + ny;
 Nu      = Ngam + ngam;
 Neta    = Nu + nu;
-Ntf     = Neta + neta + 1;
-% Ntf     = Nu + nu + 1;
+% Ntf     = Neta + neta + ntf;                  %Within eta
+Ntf     = Nu + nu + ntf;                      %Without eta
 
-max_scp_iter = 20;
+%% position Slack variables
+Ns      = Ntf;
+% Ns1x    = Ns;
+% Ns2x    = Ns1x  +   ns1x;
+% Ns1y    = Ns2x  +   ns2x;
+% Ns2y    = Ns1y  +   ns1y;
+% Ns1g    = Ns2y  +   ns2y;
+% Ns2g    = Ns1g  +   ns1g;
+% Ns1NFZ  = Ns2g  +   ns2g;
+% Ns2NFZ  = Ns1NFZ  +   ns1NFZ;
+
+Ns1NFZ    = Ns;
+Ns2NFZ    = Ns1NFZ + ns1NFZ;
+
+%% Max iteration and tolerance
+max_scp_iter = 30;
 tol = 1e-4;
+
 %% Random of Dynamic Components (Linear Guess)
 x       = linspace(x_i,x_f,nx);
 y       = linspace(y_i,y_f,ny);
@@ -60,7 +111,6 @@ u_hist      = zeros(nu,max_scp_iter);
 eta_hist    = zeros(neta,max_scp_iter);
 tf_hist     = zeros(1,max_scp_iter);
 Res_hist    = [];
-
 
 %% Store first history of random initial dynamic components
 x_hist(:,1)     = x;
@@ -87,8 +137,16 @@ ub = +Inf.*ones(nvar, 1);
 % lb(Nu+1:Nu+nu)       = u_min;       ub(Nu+1:Nu+nu)       = u_max;
 
 %% Cost function:
-f = zeros(nvar,1); 
-f(Neta+1:Neta+neta,1) = 1;
+% f = zeros(nvar,1); 
+% f(Neta+1:Neta+neta,1) = 1*dt;
+f(Ns1NFZ+1 : Ns1NFZ+ns1NFZ) = +xi;  % Within Slack variable
+f(Ns2NFZ+1 : Ns2NFZ+ns2NFZ) = +xi;  % Within Slack variable
+% f(Ns1x+1 : Ns1x+ns1x) = +xi;
+% f(Ns2x+1 : Ns2x+ns2x) = +xi;
+% f(Ns1y+1 : Ns1y+ns1y) = +xi;
+% f(Ns2y+1 : Ns2y+ns2y) = +xi;
+% f(Ns1g+1 : Ns1g+ns1g) = +xi;
+% f(Ns2g+1 : Ns2g+ns2g) = +xi;
 H = zeros(nvar,nvar);
 for i = 1:nu
    H(Nu+i,Nu+i) = 2*dt;
@@ -98,11 +156,13 @@ end
 for iter = 2:max_scp_iter %First interation is initial guess for all dynamic components
     dt      = tf / N;
     dt2     = dt / 2;
-    
+    fprintf('START AT ITERATION %d\n', iter);
+
     %% Constraint equivality:
     Aeq = [];
     beq = [];
-    
+    A_zone = [];
+    b_zone = [];
     for i = 1:N
         %% Dynamic component: fx(V,gam)
         row_x      = zeros(1,nvar);
@@ -111,6 +171,10 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
         row_x(Ngam + i)     = - dfx_dgam(V,gam(i));
         row_x(Ngam + i + 1) = - dfx_dgam(V,gam(i+1));
         row_x(Ntf)          = - (fx(V,gam(i)) + fx(V,gam(i+1)))./(tf-t0);
+        
+        %Slack variable constraint
+%         row_x(Ns1x + i)     = + (1./dt2);
+%         row_x(Ns2x + i)     = - (1./dt2);
         
         beq_x_0             = - (fx(V,gam(i)) + fx(V,gam(i+1))).*t0./(tf-t0);
         beq_x_1             = - dfx_dgam(V,gam(i))*gam(i) - dfx_dgam(V,gam(i+1))*gam(i+1);
@@ -126,6 +190,10 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
         row_y(Ngam + i + 1) = - dfy_dgam(V,gam(i+1));
         row_y(Ntf)          = - (fy(V,gam(i)) + fy(V,gam(i+1)))./(tf-t0);
         
+        %Slack variable constraint
+%         row_y(Ns1y + i)     = + (1./dt2);
+%         row_y(Ns2y + i)     = - (1./dt2);
+        
         beq_y_0             = - (fy(V,gam(i)) + fy(V,gam(i+1))).*t0./(tf-t0);
         beq_y_1             = - dfy_dgam(V,gam(i))*gam(i) - dfy_dgam(V,gam(i+1))*gam(i+1);
         
@@ -139,9 +207,41 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
         row_gam(Nu   + i)       = -1/V;
         row_gam(Nu   + i + 1)   = -1/V;
         
+        %Slack variable constraint
+%         row_gam(Ns1g + i)     = + (1./dt2);
+%         row_gam(Ns2g + i)     = - (1./dt2);
+        
         Aeq = [Aeq; row_gam];
         beq = [beq; 0];
+        if i>1
+            %% No fly zone 1 constraint:
+            A_zone_1 = zeros(1,nvar);
+            b_zone_1 = zeros(nvar,1);
+            A_zone_1(Nx + i)  = 2.*(x(i)-xc1);
+            A_zone_1(Ny + i)  = 2.*(y(i)-yc1);
+            A_zone_1(Ns1NFZ + i) = +1;
+            A_zone_1(Ns2NFZ + i) = -1;
+
+            b_zone_1 = r1.^2 - (xc1.^2 - x(i).^2 + yc1.^2 - y(i).^2);
+
+            A_zone = [A_zone; A_zone_1];
+            b_zone = [b_zone; b_zone_1];
+        end
     end
+    
+%     %% No fly zone 1 constraint at final point
+%     A_zone_f_1 = zeros(1,nvar);
+%     A_zone_f_1(Nx + nx)  = 2.*(x(nx)-xc1);
+%     A_zone_f_1(Ny + ny)  = 2.*(y(ny)-yc1);
+%     A_zone_f_1(Ns1NFZ + nx) = +1;
+%     A_zone_f_1(Ns2NFZ + ny) = -1;
+%     b_zone_f_1           = r1.^2 - (xc1.^2 - x(nx).^2 + yc1.^2 - y(ny).^2);
+%     A_zone = [A_zone; A_zone_f_1];
+%     b_zone = [b_zone; b_zone_f_1];
+    
+    A_zone_d = zeros(1,nvar);
+    A_zone_d(Ns1NFZ+
+    
     %% Boundary conditions: x_i
     row_bc1 = zeros(1,nvar);
     row_bc1(Nx+1)  = 1;
@@ -178,70 +278,63 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
     Aeq = [Aeq; row_bc1];
     beq = [beq; gam_f];
     
-%     %% Using solver to solve Optimal problem
+    %% Using solver to solve Optimal problem (Without eta)
+     [var, fval, exitflag] = quadprog(H, f, [], [], Aeq, beq, lb, ub);
+     if exitflag <= 0
+        warning('Failed Solver');
+        break;
+     end
+
+    %% Using solver to solve Optimal problem (Within eta)
 %     Var = [x y gam u tf];
-%     x0  = Var';
-%     % Objective function
-%     obj = @(x) 0.5 * x' * H * x;
+%     cvx_begin
+%         cvx_solver sedumi
 % 
-%     % Nonlinear constraint (SOC)
-%     nonlcon = @(z) soc_constraint(z, Var', eps, Nx, Ny, Ngam, N+1);
+%         variable Solution(nvar)
+% %         minimize(0.5*quad_form(Solution, H) )
 % 
-%     % Options
-%     options = optimoptions('fmincon', ...
-%         'Display','iter', ...
-%         'Algorithm','interior-point', ...
-%         'MaxIterations',100,...
-%         'MaxFunctionEvaluations', 1e4);
+%         minimize(f'*Solution)
+%     
+%         subject to
+%             Aeq*Solution == beq
+%             Solution(Neta+1:Neta+neta)       >= Solution(Nu+1:Nu+nu).^2 
+%             A_zone*Solution                  >= b_zone             %NFZ 1
+%             Solution(Ns1NFZ+1:Ns1NFZ+ns1NFZ) >= 0
+%             Solution(Ns2NFZ+1:Ns2NFZ+ns2NFZ) >= 0
+% %             Solution(Ns1x+1:Ns1x+ns1x)       >=0
+% %             Solution(Ns2x+1:Ns2x+ns2x)       >=0
+% %             Solution(Ns1y+1:Ns1y+ns1y)       >=0
+% %             Solution(Ns2y+1:Ns2y+ns2y)       >=0
+% %             Solution(Ns1g+1:Ns1g+ns1g)       >=0
+% %             Solution(Ns2g+1:Ns2g+ns2g)       >=0
+%             Solution(Ntf)                    >= 100
 % 
-%     % Solve
-%     [Solution, fval, exitflag, output] = fmincon( ...
-%         obj, x0, ...
-%         [], [], ...           % no A, b (inequality linear)
-%         Aeq, beq, ...         % equality
-%         lb, ub, ...           % bounds
-%         nonlcon, ...          % nonlinear (SOC)
-%         options);
-    %% Using solver to solve Optimal problem
-%      [var, fval, exitflag] = quadprog(H, [], [], [], Aeq, beq, lb, ub);
-%      if exitflag <= 0
-%         warning('Failed Solver');
-%         break;
-%      end
-    Var = [x y gam u tf];
-    cvx_begin
-        cvx_solver sedumi
+% %             norm(Solution(Nx+1:Nx+nx)-x(1:nx)',2) <= eps            % TRUST REGION
+% %             norm(Solution(Ny+1:Ny+ny)-y(1:ny)',2) <= eps             % TRUST REGION
+% %             norm(Solution(Ngam+1:Ngam+ngam)-gam(1:ngam)',2) <= 2*pi   % TRUST REGION
+%             
+%     cvx_end
+%     fval = cvx_optval;
+%     var = Solution;
 
-        variable Solution(nvar)
-
-%         minimize(0.5*quad_form(Solution, H) )
-        minimize(f'*Solution)
-
-        subject to
-            Aeq*Solution == beq
-            Solution(Neta+1:Neta+neta) >= Sol 
-%             norm(Solution(Nx+1:Nx+nx)-x(1:nx)',2) <= 50e3*N             % TRUST REGION
-%             norm(Solution(Ny+1:Ny+ny)-y(1:ny)',2) <= 50e3*N             % TRUST REGION
-%             norm(Solution(Ngam+1:Ngam+ngam)-gam(1:ngam)',2) <= 2*pi*N   % TRUST REGION
-    cvx_end
-    fval = cvx_optval;
-    var = Solution;
      %% Extract solution 
     x   = var(Nx   +1 : Nx   +nx)';
     y   = var(Ny   +1 : Ny   +ny)';
     gam = var(Ngam +1 : Ngam +ngam)';
     u   = var(Nu   +1 : Nu   +nu)';
-%     eta = var(Neta +1 : Nta  +neta)';
-    tf  = var(end);
+    eta = var(Neta +1 : Neta +neta)';
+    NFZ1 = var(Ns1NFZ +1 : Ns1NFZ  +ns1NFZ)';
+    NFZ2 = var(Ns2NFZ +1 : Ns2NFZ  +ns2NFZ)';
+    tf  = var(Ntf);
     
     %% store history
     x_hist(:,iter)    = x;
     y_hist(:,iter)    = y;
     gam_hist(:,iter)  = gam;
     u_hist(:,iter)    = u;
-%     eta_hist(:,iter)  = eta;
+    eta_hist(:,iter)  = eta;
     tf_hist(:,iter)   = tf;
-    J_hist(iter) = fval;
+    J_hist(iter)      = fval;
     
     %% Calculate Residual 
     Res_x_Vec       = abs((x(2:end) - x(1:end-1))/(dt2) - fx(V, gam(1:end-1)) - fx(V, gam(2:end)));
@@ -252,9 +345,10 @@ for iter = 2:max_scp_iter %First interation is initial guess for all dynamic com
     fprintf('SCP iter %d residual = %g\n', iter, Residual);
     if Residual < tol
         fprintf('Dynamics satisfied at iteration %d\n',iter);
-%         break;
+        break;
     end
     Res_hist = [Res_hist; Residual];
+    fprintf('FINIST AT ITERATION %d\n', iter);
 end
 
 
@@ -295,23 +389,34 @@ title('Fligth path angle')
 
 subplot(3,2,4)
 hold on
-plot(t,rad2deg(gam_hist(:,1)),'r--','LineWidth',1)
+plot(t,rad2deg(u_hist(:,1)./g0),'r--','LineWidth',1)
 for k=2:iter-1
-plot(t,rad2deg(gam_hist(:,k)),'k','LineWidth',0.1)
+plot(t,rad2deg(u_hist(:,k)./g0),'k','LineWidth',0.1)
 end
-plot(t,rad2deg(gam_hist(:,iter-1)),'g','LineWidth',1)
+plot(t,rad2deg(u_hist(:,iter-1)./g0),'g','LineWidth',1)
 xlabel('t')
 ylabel('(deg)')
-title('Fligth path angle')
+title('Bank angle')
 
 subplot(3,2,5)
-plot(1:max_scp_iter,J_hist,'o-','LineWidth',2)
+plot(1:iter,J_hist,'o-','LineWidth',2)
 xlabel('SCP iteration')
 ylabel('Objective value')
 title('Objective function convergence')
 
+%% -- Trajectory figure -- %%
+theta = linspace(0, 2*pi, 200);
+
+x_circle_1 = xc1 + r1*cos(theta);
+y_circle_1 = yc1 + r1*sin(theta);
+
 figure
-plot(x,y,'r','LineWidth',2)
+hold on
+for k=1:iter-1
+plot(x_hist(:,k),y_hist(:,k),'r')
+end
+hold on
+plot(x_circle_1, y_circle_1, 'b', 'LineWidth', 2)
 xlabel('km')
 ylabel('km')
 title('UAV trajectory')
